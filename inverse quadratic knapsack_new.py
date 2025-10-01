@@ -12,8 +12,8 @@ import pandas as pd
 # -----------------------------
 # Global problem size
 # -----------------------------
-n = 100
-R = 100
+n = 500
+R = 1000
 SEED = 12345
 NUM_RUNS = 50
 
@@ -190,42 +190,57 @@ def solve_OUP(oc, oi, ub, ab):
     lbp = ub["lbd_bar_prime"]; mup = ub["mu_bar_prime"]
     alpha, beta = ab["alpha"], ab["beta"]
 
+    # Các ngưỡng x̄, ȳ như trong mô tả bài toán
     x_bar = np.where(h_m <= g_p, mu, lbp)
     y_bar = np.where(h_p <= g_m, lb, mup)
-    tL = T - x_bar; tU = T + y_bar
 
+    # Tập breakpoint ứng viên
     cand = []
     if oi["L"].size: cand.append(oi["L"])
     if oi["U"].size: cand.append(oi["U"])
     if oi["M"].size: cand.append(oi["M"])
+
+    tL = T - x_bar
+    tU = T + y_bar
     cand += [tL[IL], tU[IU], tL[IM], tU[IM]]
-    if alpha <= beta: cand.append(np.array([alpha, beta]))
+    if alpha <= beta:
+        cand.append(np.array([alpha, beta]))
+
     bp = np.unique(np.concatenate([c for c in cand if c.size > 0]))
     bp = bp[(bp >= alpha) & (bp <= beta)]
-    if bp.size == 0: bp = np.array([alpha, beta])
+    if bp.size == 0:
+        bp = np.array([alpha, beta])
 
-    phi_L = T - x_bar; phi_U = T + y_bar
+    phi_L = T - x_bar
+    phi_U = T + y_bar
 
     def SL(i, t):
+        # slope đóng góp từ nhóm L/M (phía "trái")
         return np.where(t < phi_L[i], -np.maximum(h_m[i], g_p[i]), -np.minimum(h_m[i], g_p[i]))
+
     def SU(i, t):
-        return np.where(t <= phi_U[i], np.minimum(h_p[i], g_m[i]),  np.maximum(h_p[i], g_m[i]))
+        # slope đóng góp từ nhóm U/M (phía "phải")
+        return np.where(t <= phi_U[i],  np.minimum(h_p[i], g_m[i]),  np.maximum(h_p[i], g_m[i]))
 
     def slope_at(t):
         mask_U = (T[IU] < t)
         sU = SU(IU, t) if IU.size else 0.0
         sU = sU[mask_U].sum() if np.ndim(sU) else sU
+
         mask_L = (T[IL] > t)
         sL = SL(IL, t) if IL.size else 0.0
         sL = sL[mask_L].sum() if np.ndim(sL) else sL
+
         mask_Ml = (T[IM] < t)
         sMl = SU(IM, t) if IM.size else 0.0
         sMl = sMl[mask_Ml].sum() if np.ndim(sMl) else sMl
+
         mask_Mg = (T[IM] > t)
         sMg = SL(IM, t) if IM.size else 0.0
         sMg = sMg[mask_Mg].sum() if np.ndim(sMg) else sMg
         return float(sU + sL + sMl + sMg)
 
+    # Tìm t* bằng binary search trên breakpoints
     lo, hi = 0, bp.size - 1
     def s(idx): return slope_at(bp[idx] + 1e-8)
     while lo < hi:
@@ -234,34 +249,59 @@ def solve_OUP(oc, oi, ub, ab):
         else: hi = mid
     t_opt = float(bp[lo])
 
-    lbd = np.zeros(n); muv = np.zeros(n); lbpv = np.zeros(n); mupv = np.zeros(n)
+    # Khôi phục nghiệm tối ưu (λ, μ, λ', μ')
+    lbd  = np.zeros(n)  # λ
+    muv  = np.zeros(n)  # μ
+    lbpv = np.zeros(n)  # λ'
+    mupv = np.zeros(n)  # μ'
 
+    # Nhóm U và M với T_i < t*
     for idx in np.concatenate([IU[T[IU] < t_opt], IM[T[IM] < t_opt]]):
         if t_opt > T[idx] + y_bar[idx]:
             if h_p[idx] <= g_m[idx]:
-                lbd[idx] = lb[idx]; mupv[idx] = t_opt - T[idx] - lbd[idx]
+                lbd[idx] = lb[idx]
+                mupv[idx] = t_opt - T[idx] - lbd[idx]
             else:
-                mupv[idx] = mup[idx]; lbd[idx] = t_opt - T[idx] - mupv[idx]
+                mupv[idx] = mup[idx]
+                lbd[idx]  = t_opt - T[idx] - mupv[idx]
         else:
             if h_p[idx] <= g_m[idx]:
-                lbd[idx] = t_opt - T[idx]; mupv[idx] = 0.0
+                lbd[idx]  = t_opt - T[idx]
+                mupv[idx] = 0.0
             else:
-                mupv[idx] = t_opt - T[idx]; lbd[idx] = 0.0
+                mupv[idx] = t_opt - T[idx]
+                lbd[idx]  = 0.0
 
+    # Nhóm L và M với T_i > t*
     for idx in np.concatenate([IL[T[IL] > t_opt], IM[T[IM] > t_opt]]):
         if t_opt < T[idx] - x_bar[idx]:
             if h_m[idx] <= g_p[idx]:
-                muv[idx] = mu[idx]; lbpv[idx] = T[idx] - t_opt - muv[idx]
+                muv[idx]  = mu[idx]
+                lbpv[idx] = T[idx] - t_opt - muv[idx]
             else:
-                lbpv[idx] = lbp[idx]; muv[idx] = T[idx] - t_opt - lbpv[idx]
+                lbpv[idx] = lbp[idx]
+                muv[idx]  = T[idx] - t_opt - lbpv[idx]
         else:
             if h_m[idx] <= g_p[idx]:
-                muv[idx] = T[idx] - t_opt; lbpv[idx] = 0.0
+                muv[idx]  = T[idx] - t_opt
+                lbpv[idx] = 0.0
             else:
-                lbpv[idx] = T[idx] - t_opt; muv[idx] = 0.0
+                lbpv[idx] = T[idx] - t_opt
+                muv[idx]  = 0.0
 
     obj = float(h_p @ lbd + h_m @ muv + g_p @ lbpv + g_m @ mupv)
-    return lbd, muv, lbpv, mupv, obj, t_opt
+
+    # Gói kết quả đầy đủ (bao gồm số breakpoint đã xét)
+    solution = {
+        "lbd": lbd,               # λ      (size n)
+        "mu": muv,                # μ      (size n)
+        "lbd_prime": lbpv,        # λ'     (size n)
+        "mu_prime": mupv,         # μ'     (size n)
+        "t_star": t_opt,          # t*
+        "objective": obj,         # f(t*)
+        "num_breakpoints": int(bp.size)
+    }
+    return solution
 
 # -----------------------------
 # Build instance once
@@ -273,23 +313,30 @@ ab = calculate_alpha_beta(oi, ub)
 lp_data = get_data_for_lp(oc, oi, ub, ab)
 
 # -----------------------------
+# -----------------------------
 # One solve (for sanity check)
 # -----------------------------
 t0 = time.perf_counter()
 x_star_lp, obj_lp = solve_LP(lp_data)
 t_lp_once = time.perf_counter() - t0
-lbd_lp = x_star_lp[:n]; mu_lp = x_star_lp[n:2*n]
-lbp_lp = x_star_lp[2*n:3*n]; mup_lp = x_star_lp[3*n:4*n]; t_var = x_star_lp[-1]
+
+lbd_lp = x_star_lp[:n]
+mu_lp  = x_star_lp[n:2*n]
+lbp_lp = x_star_lp[2*n:3*n]
+mup_lp = x_star_lp[3*n:4*n]
+t_var  = x_star_lp[-1]
 
 t0 = time.perf_counter()
-lbd, muv, lbpv, mupv, obj_alg, t_opt = solve_OUP(oc, oi, ub, ab)
+alg_sol = solve_OUP(oc, oi, ub, ab)
 t_alg_once = time.perf_counter() - t0
 
-print("Sanity — LP obj:", obj_lp, "Alg obj:", obj_alg)
+print("Sanity — LP obj:", obj_lp, "Alg obj:", alg_sol["objective"])
+print("t_var (LP) =", t_var, " ; t_star (Alg) =", alg_sol["t_star"])
+print("Breakpoints considered by algorithm:", alg_sol["num_breakpoints"])
 
 # -----------------------------
+last_alg_solution = None
 runs = []
-bp_counts = []  # lưu số breakpoint mỗi vòng
 
 for k in range(1, NUM_RUNS + 1):
     # LP
@@ -299,27 +346,29 @@ for k in range(1, NUM_RUNS + 1):
 
     # Algorithm
     t0 = time.perf_counter()
-    _, _, _, _, obj_alg_k, _= solve_OUP(oc, oi, ub, ab)
+    alg_sol_k = solve_OUP(oc, oi, ub, ab)
     t_alg_k = time.perf_counter() - t0
 
-    rel_gap_k = abs(obj_alg_k - obj_lp_k) / (abs(obj_lp_k) + 1e-12)
-    runs.append((t_lp_k, t_alg_k, obj_lp_k, obj_alg_k, rel_gap_k))
+    rel_gap_k = abs(alg_sol_k["objective"] - obj_lp_k) / (abs(obj_lp_k) + 1e-12)
+    runs.append((t_lp_k, t_alg_k, obj_lp_k, alg_sol_k["objective"], rel_gap_k))
 
-    #bp_counts.append(bp_count)  # thêm breakpoint vào danh sách
+    if k == NUM_RUNS:
+        last_alg_solution = alg_sol_k  # lưu nghiệm của vòng cuối
 
 df_all = pd.DataFrame(runs, columns=["time_LP", "time_Alg", "obj_LP", "obj_Alg", "rel_gap"])
 
 print("\n==== Summary ====")
-print(f"LP time:   min={df_all['time_LP'].min():.6f}, "
-      f"avg={df_all['time_LP'].mean():.6f}, "
-      f"max={df_all['time_LP'].max():.6f}")
+print(f"LP time:   min={df_all['time_LP'].min():.6f}, avg={df_all['time_LP'].mean():.6f}, max={df_all['time_LP'].max():.6f}")
+print(f"Alg time:  min={df_all['time_Alg'].min():.6f}, avg={df_all['time_Alg'].mean():.6f}, max={df_all['time_Alg'].max():.6f}")
 
-print(f"Alg time:  min={df_all['time_Alg'].min():.6f}, "
-      f"avg={df_all['time_Alg'].mean():.6f}, "
-      f"max={df_all['time_Alg'].max():.6f}")
-
-#print(f"Breakpoints considered by algorithm: min={min(bp_counts)}, "
- #     f"avg={sum(bp_counts) / len(bp_counts):.2f}, "
-  #    f"max={max(bp_counts)}")
+#if last_alg_solution is not None:
+#    print("\n==== Last run optimal solution (Algorithm) ====")
+#    print("t* =", last_alg_solution["t_star"])
+#    print("objective =", last_alg_solution["objective"])
+    # Ví dụ in 5 phần tử đầu để gọn:
+#    print("lbd[:5]      =", last_alg_solution["lbd"][:5])
+#    print("mu[:5]       =", last_alg_solution["mu"][:5])
+#    print("lbd'[:5]     =", last_alg_solution["lbd_prime"][:5])
+#    print("mu'[:5]      =", last_alg_solution["mu_prime"][:5])
 
 
